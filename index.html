@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>一起賺點零用錢 - 預覽版</title>
+    <title>一起賺點零用錢 - 雲端小帳本</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -23,6 +23,7 @@
         const { useState, useEffect, useMemo, useCallback } = React;
 
         // --- 設定區 ---
+        // 請確認此處網址與您的 Google Apps Script 部署網址一致
         const GAS_URL = "https://script.google.com/macros/s/AKfycby7qSpHzKkUeDQixbI2eLS9uk9F4J8ZEWx-5O1yEEdOC01cxfh22u3YGiwn4OIfTUvS/exec"; 
 
         const PARTNERS = ["慧", "芃", "吟", "哲"];
@@ -39,23 +40,83 @@
         };
 
         const App = () => {
-            const [sales, setSales] = useState([
-                { id: 'S1', timestamp: Date.now() - 3600000, channel: '現場擺攤', qty: 1, style: '黃', custName: '陳先生', custPhone: '123', gross: 499, fee: 0, seller: '芃' },
-                { id: 'S2', timestamp: Date.now() - 7200000, channel: '蝦皮', qty: 2, style: '藍', custName: '林小姐', custPhone: '456', gross: 1180, fee: 171, seller: '慧' }
-            ]);
-            const [costs, setCosts] = useState([
-                { id: 'C1', timestamp: Date.now() - 86400000, item: '花材進貨', amount: 49070 }
-            ]);
-            const [loading, setLoading] = useState(false);
+            const [sales, setSales] = useState([]);
+            const [costs, setCosts] = useState([]);
+            const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('dashboard');
             const [isSyncing, setIsSyncing] = useState(false);
-            const [lastSyncTime, setLastSyncTime] = useState(new Date().toLocaleTimeString('zh-TW', { hour12: false }));
+            const [lastSyncTime, setLastSyncTime] = useState('正在初始化...');
 
-            const [sellerName, setSellerName] = useState('芃');
+            const [sellerName, setSellerName] = useState(localStorage.getItem('seller_name') || '');
             const [saleForm, setSaleForm] = useState({ channel: '現場擺攤', qty: 1, custName: '', custPhone: '', style: '藍' });
             const [costForm, setCostForm] = useState({ item: '', amount: '' });
 
-            useEffect(() => { lucide.createIcons(); }, [activeTab, loading, sales, costs]);
+            // 核心讀取函數
+            const fetchData = useCallback(async (isSilent = false) => {
+                if (!isSilent) setLoading(true);
+                try {
+                    // 加入時間戳記徹底破壞快取
+                    const res = await fetch(`${GAS_URL}?t=${Date.now()}`, { 
+                        method: 'GET',
+                        cache: 'no-store'
+                    });
+                    const data = await res.json();
+                    
+                    if (data && !data.error) {
+                        setSales(data.sales || []);
+                        setCosts(data.costs || []);
+                        setLastSyncTime(new Date().toLocaleTimeString('zh-TW', { hour12: false }));
+                    } else if (data && data.error) {
+                        setLastSyncTime('GAS 錯誤: ' + data.error);
+                    }
+                } catch (e) { 
+                    console.error("讀取失敗", e);
+                    setLastSyncTime('連線失敗 (請確認網路)');
+                } finally { 
+                    setLoading(false); 
+                }
+            }, []);
+
+            useEffect(() => { 
+                fetchData(); 
+                
+                // 1. 焦點回到網頁時刷新
+                const handleFocus = () => fetchData(true);
+                window.addEventListener('focus', handleFocus);
+                
+                // 2. 每 30 秒自動刷新
+                const timer = setInterval(() => fetchData(true), 30000);
+                
+                return () => {
+                    window.removeEventListener('focus', handleFocus);
+                    clearInterval(timer);
+                };
+            }, [fetchData]);
+
+            useEffect(() => { 
+                if (typeof lucide !== 'undefined') {
+                    lucide.createIcons();
+                }
+            }, [activeTab, loading, sales, costs]);
+
+            const syncToGAS = async (payload) => {
+                setIsSyncing(true);
+                try {
+                    await fetch(GAS_URL, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    // 操作後自動重整數據
+                    setTimeout(() => fetchData(true), 1500);
+                } catch (e) { 
+                    console.error("傳送失敗", e);
+                    setLastSyncTime('傳送失敗');
+                } finally { 
+                    setTimeout(() => setIsSyncing(false), 1000); 
+                }
+            };
 
             const stats = useMemo(() => {
                 const totalFixedCost = costs.reduce((sum, c) => sum + Number(c.amount || 0), 0);
@@ -68,11 +129,13 @@
 
             const handleAddSale = (e) => {
                 e.preventDefault();
+                if (!sellerName) return alert("請先在控制台選取銷售員身分唷！");
                 const config = CHANNELS[saleForm.channel];
                 const gross = config.price * saleForm.qty;
                 const fee = Math.round(gross * config.feeRate);
                 const newSale = { 
                     ...saleForm, 
+                    action: "addSale",
                     id: 'S' + Date.now(), 
                     timestamp: Date.now(),
                     seller: sellerName, 
@@ -80,38 +143,50 @@
                     fee 
                 };
                 setSales(prev => [newSale, ...prev]);
+                syncToGAS(newSale);
                 setSaleForm({ ...saleForm, custName: '', custPhone: '', qty: 1 });
-                // 實際環境會呼叫 syncToGAS
             };
 
             const handleAddCost = (e) => {
                 e.preventDefault();
                 const newCost = { 
+                    action: "addCost",
                     id: 'C' + Date.now(),
                     timestamp: Date.now(),
                     item: costForm.item, 
                     amount: Number(costForm.amount) 
                 };
-                setCosts(prev => [...prev, newCost]);
+                setCosts(prev => [newCost, ...prev]);
+                syncToGAS(newCost);
                 setCostForm({ item: '', amount: '' });
             };
 
             const deleteItem = (type, id) => {
                 if (type === 'sales') setSales(sales.filter(s => s.id != id));
                 else setCosts(costs.filter(c => c.id != id));
+                syncToGAS({ action: "delete", type, id });
             };
+
+            if (loading) return (
+                <div className="h-screen flex flex-col items-center justify-center bg-white p-10 text-center">
+                    <div className="w-12 h-12 border-4 border-slate-100 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+                    <p className="text-slate-400 font-bold text-sm tracking-widest animate-pulse">正在同步雲端資料庫...</p>
+                </div>
+            );
 
             return (
                 <div className="max-w-md mx-auto min-h-screen pb-20 shadow-xl bg-white relative border-x border-slate-100">
                     <header className="bg-blue-600 text-white p-6 rounded-b-3xl shadow-lg relative">
-                        <div className="flex justify-between items-start mb-1">
-                            <h1 className="text-xl font-bold flex items-center gap-2">
-                                <i data-lucide="sparkles"></i> 一起賺點零用錢
-                            </h1>
-                            <div className="bg-green-400 text-blue-900 text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse">預覽模式</div>
-                        </div>
+                        {isSyncing && (
+                            <div className="absolute top-3 right-4 flex items-center gap-1.5 text-[10px] bg-yellow-400 text-blue-900 px-3 py-1 rounded-full font-black animate-pulse z-20">
+                                <i data-lucide="refresh-cw" className="w-3 h-3 animate-spin"></i> 正在寫入
+                            </div>
+                        )}
+                        <h1 className="text-xl font-bold flex items-center gap-2 mb-1">
+                            <i data-lucide="sparkles"></i> 一起賺點零用錢
+                        </h1>
                         <p className="text-blue-100/60 text-[10px] mb-4 flex items-center gap-1">
-                            <i data-lucide="clock" className="w-2.5 h-2.5"></i> 最後同步：{lastSyncTime}
+                            <i data-lucide="clock" className="w-2.5 h-2.5"></i> 最後更新：{lastSyncTime}
                         </p>
                         <div className="grid grid-cols-2 gap-4 text-center">
                             <div className="bg-white/10 p-3 rounded-xl border border-white/10">
@@ -140,7 +215,7 @@
                                     <h2 className="font-bold text-slate-700 mb-3 text-[10px] uppercase tracking-widest opacity-60">銷售員身分</h2>
                                     <div className="grid grid-cols-4 gap-2 mb-6">
                                         {PARTNERS.map(name => (
-                                            <button key={name} onClick={() => setSellerName(name)}
+                                            <button key={name} onClick={() => { setSellerName(name); localStorage.setItem('seller_name', name); }}
                                                 className={`py-3 rounded-xl font-bold transition-all border-2 ${sellerName === name ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-100 text-slate-400'}`}>{name}</button>
                                         ))}
                                     </div>
@@ -149,18 +224,18 @@
                                     <form onSubmit={handleAddSale} className="space-y-4">
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="col-span-1"><label className="text-[10px] font-bold text-slate-400 ml-1 mb-1 block">客戶姓名</label>
-                                                <input type="text" placeholder="例: 林同學" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none" value={saleForm.custName} onChange={(e)=>setSaleForm({...saleForm, custName: e.target.value})} />
+                                                <input type="text" placeholder="例: 林同學" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-1 focus:ring-blue-100" value={saleForm.custName} onChange={(e)=>setSaleForm({...saleForm, custName: e.target.value})} />
                                             </div>
                                             <div className="col-span-1"><label className="text-[10px] font-bold text-slate-400 ml-1 mb-1 block">客戶電話</label>
-                                                <input type="number" placeholder="末三碼" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none" value={saleForm.custPhone} onChange={(e)=>setSaleForm({...saleForm, custPhone: e.target.value})} />
+                                                <input type="number" inputmode="numeric" placeholder="末三碼" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-1 focus:ring-blue-100" value={saleForm.custPhone} onChange={(e)=>setSaleForm({...saleForm, custPhone: e.target.value})} />
                                             </div>
-                                            <div><label className="text-[10px] font-bold text-slate-400 ml-1 mb-1 block">銷售通路</label>
+                                            <div><label className="text-[10px] font-bold text-slate-400 ml-1 mb-1 block">通路</label>
                                                 <select className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none appearance-none" value={saleForm.channel} onChange={(e)=>setSaleForm({...saleForm, channel: e.target.value})}>
                                                     {Object.keys(CHANNELS).map(c => <option key={c} value={c}>{c}</option>)}
                                                 </select>
                                             </div>
                                             <div><label className="text-[10px] font-bold text-slate-400 ml-1 mb-1 block">數量</label>
-                                                <input type="number" min="1" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none font-bold" value={saleForm.qty} onChange={(e)=>setSaleForm({...saleForm, qty: Number(e.target.value)})} />
+                                                <input type="number" inputmode="numeric" min="1" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none font-bold" value={saleForm.qty} onChange={(e)=>setSaleForm({...saleForm, qty: Number(e.target.value)})} />
                                             </div>
                                         </div>
                                         <div><label className="text-[10px] font-bold text-slate-400 ml-1 mb-2 block uppercase tracking-widest">款式選擇</label>
@@ -172,29 +247,34 @@
                                                 ))}
                                             </div>
                                         </div>
-                                        <button className="w-full bg-blue-600 text-white p-4 rounded-xl font-black shadow-lg shadow-blue-100 active:scale-95 transition-all">確認登記售出</button>
+                                        <button className="w-full bg-blue-600 text-white p-4 rounded-xl font-black shadow-lg shadow-blue-100 active:scale-95 transition-all uppercase tracking-tighter">確認登記售出</button>
                                     </form>
                                 </section>
+
+                                <button onClick={() => fetchData()} className="w-full py-4 text-[10px] text-slate-400 font-bold hover:text-blue-500 transition-colors uppercase tracking-widest flex items-center justify-center gap-2">
+                                    <i data-lucide="refresh-cw" className="w-3 h-3"></i> 手動強制同步雲端數據
+                                </button>
                             </div>
                         )}
 
                         {activeTab === 'sales' && (
                             <div className="space-y-3">
-                                {[...sales].sort((a,b)=> Number(b.timestamp) - Number(a.timestamp)).map(s => (
-                                    <div key={s.id} className="bg-white border border-slate-100 p-4 rounded-2xl flex justify-between items-center shadow-sm relative overflow-hidden">
+                                {sales.length === 0 && <div className="text-center py-20 opacity-20 font-bold text-xs">目前尚無銷售紀錄</div>}
+                                {[...sales].sort((a,b)=> new Date(b.timestamp) - new Date(a.timestamp)).map(s => (
+                                    <div key={s.id || s.timestamp} className="bg-white border border-slate-100 p-4 rounded-2xl flex justify-between items-center shadow-sm relative overflow-hidden">
                                         <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${s.style === '藍' ? 'bg-sky-400' : s.style === '粉' ? 'bg-[#e2b4bd]' : 'bg-amber-400'}`}></div>
                                         <div className="flex gap-3 items-center">
                                             <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center text-slate-600 font-bold text-[10px] border uppercase">{s.seller?.[0]}</div>
                                             <div className="flex flex-col">
                                                 <div className="flex items-center gap-2 font-black text-slate-800 text-sm">
-                                                    <span>{s.style}束 × {s.qty}</span>
-                                                    <span className="text-[8px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-400 font-bold">{s.channel}</span>
+                                                    <span>{(s.style || '未知')}束 × {(s.qty || 0)}</span>
+                                                    <span className="text-[8px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-400 font-bold">{(s.channel || '其他')}</span>
                                                 </div>
-                                                <p className="text-[10px] text-slate-400">客: {s.custName} | 電: {s.custPhone}</p>
+                                                <p className="text-[10px] text-slate-400">客: {s.custName || s.custname || '-'} | 電: {s.custPhone || s.custphone || '-'}</p>
                                             </div>
                                         </div>
                                         <div className="text-right flex items-center gap-3">
-                                            <p className="font-black text-blue-600 text-base">+${(Number(s.gross) - Number(s.fee)).toLocaleString()}</p>
+                                            <p className="font-black text-blue-600 text-base">+${(Number(s.gross || 0) - Number(s.fee || 0)).toLocaleString()}</p>
                                             <button onClick={()=>deleteItem('sales', s.id)} className="text-red-200 hover:text-red-500 transition-colors"><i data-lucide="x-circle" className="w-5 h-5"></i></button>
                                         </div>
                                     </div>
@@ -206,18 +286,19 @@
                             <div className="space-y-4">
                                 <form onSubmit={handleAddCost} className="bg-slate-900 p-4 rounded-2xl flex items-center gap-2 shadow-inner">
                                     <input type="text" placeholder="項目" className="w-24 p-3 bg-white/10 text-white rounded-xl outline-none text-sm placeholder:text-white/20" value={costForm.item} onChange={(e)=>setCostForm({...costForm, item: e.target.value})} required />
-                                    <input type="number" placeholder="金額" className="flex-1 min-w-0 p-3 bg-white/10 text-white rounded-xl outline-none text-sm font-bold" value={costForm.amount} onChange={(e)=>setCostForm({...costForm, amount: e.target.value})} required />
-                                    <button className="bg-white text-slate-900 p-3 rounded-xl font-black flex-shrink-0"><i data-lucide="plus" className="w-5 h-5"></i></button>
+                                    <input type="number" inputmode="numeric" placeholder="金額" className="flex-1 min-w-0 p-3 bg-white/10 text-white rounded-xl outline-none text-sm font-bold" value={costForm.amount} onChange={(e)=>setCostForm({...costForm, amount: e.target.value})} required />
+                                    <button className="bg-white text-slate-900 p-3 rounded-xl font-black active:scale-90 transition-transform flex-shrink-0"><i data-lucide="plus" className="w-5 h-5"></i></button>
                                 </form>
                                 <div className="divide-y divide-slate-100 bg-white rounded-2xl border shadow-sm px-4">
-                                    {[...costs].sort((a,b)=>Number(b.timestamp)-Number(a.timestamp)).map(c => (
-                                        <div key={c.id} className="flex justify-between py-4 items-center">
-                                            <div className="flex-shrink-0 w-24 truncate mr-2">
+                                    {costs.length === 0 && <p className="text-center py-10 opacity-20 text-xs font-bold">尚無支出紀錄</p>}
+                                    {[...costs].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).map(c => (
+                                        <div key={c.id || c.timestamp} className="flex justify-between py-4 items-center">
+                                            <div className="flex-shrink-0 w-24 sm:w-32 truncate mr-2">
                                                 <span className="font-bold text-slate-600 block text-sm">{c.item}</span>
-                                                <p className="text-[9px] text-slate-300">2026/5/17</p>
+                                                <p className="text-[9px] text-slate-300">{new Date(c.timestamp).toLocaleDateString('zh-TW')}</p>
                                             </div>
                                             <div className="flex-1 text-right flex items-center justify-end gap-3 min-w-0">
-                                                <span className="font-black text-red-500 truncate text-sm">-${Number(c.amount).toLocaleString()}</span>
+                                                <span className="font-black text-red-500 truncate text-sm">-${Number(c.amount || 0).toLocaleString()}</span>
                                                 <button onClick={()=>deleteItem('costs', c.id)} className="text-slate-200 hover:text-red-400 flex-shrink-0"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
                                             </div>
                                         </div>
@@ -226,8 +307,9 @@
                             </div>
                         )}
                     </main>
+
                     <footer className="fixed bottom-0 max-w-md w-full bg-white/80 backdrop-blur-md border-t p-3 text-[9px] text-center text-slate-400 font-bold uppercase tracking-widest">
-                        全體共享流水帳 · 展示預覽版
+                        正式營運帳本 · 全體共享同步
                     </footer>
                 </div>
             );
