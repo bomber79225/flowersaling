@@ -20,10 +20,9 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useCallback } = React;
 
         // --- 設定區 ---
-        // 請確保這是您最新的 Google Apps Script 部署網址
         const GAS_URL = "https://script.google.com/macros/s/AKfycby7qSpHzKkUeDQixbI2eLS9uk9F4J8ZEWx-5O1yEEdOC01cxfh22u3YGiwn4OIfTUvS/exec"; 
 
         const PARTNERS = ["慧", "芃", "吟", "哲"];
@@ -45,24 +44,45 @@
             const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('dashboard');
             const [isSyncing, setIsSyncing] = useState(false);
+            const [lastSyncTime, setLastSyncTime] = useState('');
 
             const [sellerName, setSellerName] = useState(localStorage.getItem('seller_name') || '');
             const [saleForm, setSaleForm] = useState({ channel: '現場擺攤', qty: 1, custName: '', custPhone: '', style: '藍' });
             const [costForm, setCostForm] = useState({ item: '', amount: '' });
 
-            // 從 Google 試算表讀取資料
-            const fetchData = async () => {
+            // 強制從 Google 試算表抓取最新資料 (加上時間戳破壞快取)
+            const fetchData = useCallback(async (isSilent = false) => {
+                if (!isSilent) setLoading(true);
                 try {
-                    const res = await fetch(GAS_URL);
+                    const res = await fetch(`${GAS_URL}?t=${Date.now()}`);
                     const data = await res.json();
                     setSales(data.sales || []);
                     setCosts(data.costs || []);
-                } catch (e) { console.error("讀取失敗", e); }
-                finally { setLoading(false); }
-            };
+                    setLastSyncTime(new Date().toLocaleTimeString('zh-TW', { hour12: false }));
+                } catch (e) { 
+                    console.error("讀取失敗", e); 
+                } finally { 
+                    setLoading(false); 
+                }
+            }, []);
 
-            useEffect(() => { fetchData(); }, []);
-            useEffect(() => { lucide.createIcons(); }, [activeTab, loading, sales]);
+            useEffect(() => { 
+                fetchData(); 
+                
+                // 1. 切換分頁自動刷新
+                const handleFocus = () => fetchData(true);
+                window.addEventListener('focus', handleFocus);
+                
+                // 2. 背景定時刷新 (每 30 秒) - 確保不同裝置間的資料落差不超過半分鐘
+                const timer = setInterval(() => fetchData(true), 30000);
+                
+                return () => {
+                    window.removeEventListener('focus', handleFocus);
+                    clearInterval(timer);
+                };
+            }, [fetchData]);
+
+            useEffect(() => { lucide.createIcons(); }, [activeTab, loading, sales, costs]);
 
             const syncToGAS = async (payload) => {
                 setIsSyncing(true);
@@ -72,17 +92,8 @@
                         mode: 'no-cors',
                         body: JSON.stringify(payload)
                     });
-                    if (payload.action !== "delete") {
-                        // 為了效能，新增時先手動更新本地狀態，不重新抓整份表
-                        if (payload.action === "addSale") {
-                            setSales(prev => [payload, ...prev]);
-                        } else {
-                            setCosts(prev => [...prev, payload]);
-                        }
-                    } else {
-                        // 刪除則重新抓取
-                        fetchData();
-                    }
+                    // 操作後自動重整數據，延遲一下確保 GAS 寫入完成
+                    setTimeout(() => fetchData(true), 1200);
                 } catch (e) { console.error(e); }
                 finally { setTimeout(() => setIsSyncing(false), 800); }
             };
@@ -94,8 +105,7 @@
                 const totalQty = sales.reduce((sum, s) => sum + Number(s.qty || 0), 0);
                 const netRevenue = totalGrossRevenue - totalFees;
                 const profit = netRevenue - totalFixedCost;
-                const breakEvenProgress = totalFixedCost > 0 ? Math.min((netRevenue / totalFixedCost) * 100, 100) : 0;
-                return { totalFixedCost, totalGrossRevenue, totalFees, netRevenue, profit, breakEvenProgress, totalQty };
+                return { totalFixedCost, totalGrossRevenue, totalFees, netRevenue, profit, totalQty };
             }, [sales, costs]);
 
             const handleAddSale = (e) => {
@@ -113,6 +123,8 @@
                     gross, 
                     fee 
                 };
+                // 先更新本地 UI，反應更快
+                setSales(prev => [newSale, ...prev]);
                 syncToGAS(newSale);
                 setSaleForm({ ...saleForm, custName: '', custPhone: '', qty: 1 });
             };
@@ -126,6 +138,7 @@
                     item: costForm.item, 
                     amount: Number(costForm.amount) 
                 };
+                setCosts(prev => [...prev, newCost]);
                 syncToGAS(newCost);
                 setCostForm({ item: '', amount: '' });
             };
@@ -137,11 +150,10 @@
             };
 
             if (loading) return (
-                <div className="h-screen flex flex-col items-center justify-center bg-white p-10">
-                    <div className="w-16 h-1 w-full bg-slate-100 rounded-full overflow-hidden mb-4">
-                        <div className="h-full bg-blue-600 w-1/2 animate-[shimmer_1.5s_infinite]"></div>
-                    </div>
-                    <p className="text-slate-400 font-bold text-sm tracking-widest animate-pulse">連線至 Google 試算表...</p>
+                <div className="h-screen flex flex-col items-center justify-center bg-white p-10 text-center">
+                    <div className="w-12 h-12 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+                    <p className="text-slate-400 font-bold text-sm tracking-widest animate-pulse">正在同步全體資料...</p>
+                    <p className="text-slate-300 text-[10px] mt-2 italic">這通常需要 3~5 秒鐘</p>
                 </div>
             );
 
@@ -150,28 +162,31 @@
                     <header className="bg-blue-600 text-white p-6 rounded-b-3xl shadow-lg relative">
                         {isSyncing && (
                             <div className="absolute top-3 right-4 flex items-center gap-1.5 text-[10px] bg-yellow-400 text-blue-900 px-3 py-1 rounded-full font-black animate-pulse z-20">
-                                <i data-lucide="refresh-cw" className="w-3 h-3 animate-spin"></i> 同步中
+                                <i data-lucide="refresh-cw" className="w-3 h-3 animate-spin"></i> 雲端同步中
                             </div>
                         )}
-                        <h1 className="text-xl font-bold flex items-center gap-2 mb-4">
+                        <h1 className="text-xl font-bold flex items-center gap-2 mb-1">
                             <i data-lucide="sparkles"></i> 一起賺點零用錢
                         </h1>
+                        <p className="text-blue-200 text-[10px] mb-4 opacity-80 flex items-center gap-1">
+                            <i data-lucide="clock" className="w-2.5 h-2.5"></i> 最後同步於：{lastSyncTime}
+                        </p>
                         <div className="grid grid-cols-2 gap-4 text-center">
                             <div className="bg-white/10 p-3 rounded-xl border border-white/10">
-                                <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest">累計銷售</p>
+                                <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest">全體累計銷售</p>
                                 <p className="text-2xl font-bold">{stats.totalQty} / 200</p>
                             </div>
                             <div className="bg-white/10 p-3 rounded-xl border border-white/10">
-                                <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest">預估淨利</p>
+                                <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest">目前預估淨利</p>
                                 <p className="text-2xl font-bold">${stats.profit.toLocaleString()}</p>
                             </div>
                         </div>
                     </header>
 
-                    <nav className="flex bg-white border-b sticky top-0 z-10">
+                    <nav className="flex bg-white border-b sticky top-0 z-10 shadow-sm">
                         {['dashboard', 'sales', 'costs'].map(tab => (
                             <button key={tab} onClick={()=>setActiveTab(tab)} className={`flex-1 py-4 text-xs font-bold transition-all ${activeTab===tab?'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30':'text-slate-400'}`}>
-                                {tab==='dashboard'?'控制台':tab==='sales'?'銷售流水':'支出'}
+                                {tab==='dashboard'?'控制台':tab==='sales'?'流水帳':'支出'}
                             </button>
                         ))}
                     </nav>
@@ -215,17 +230,21 @@
                                                 ))}
                                             </div>
                                         </div>
-                                        <button className="w-full bg-blue-600 text-white p-4 rounded-xl font-black shadow-lg shadow-blue-100 active:scale-95 transition-all">登記售出</button>
+                                        <button className="w-full bg-blue-600 text-white p-4 rounded-xl font-black shadow-lg shadow-blue-100 active:scale-95 transition-all">確認登記</button>
                                     </form>
                                 </section>
+
+                                <button onClick={() => fetchData()} className="w-full py-4 text-[10px] text-slate-400 font-bold hover:text-blue-500 transition-colors uppercase tracking-widest flex items-center justify-center gap-2">
+                                    <i data-lucide="refresh-cw" className="w-3 h-3"></i> 手動強制刷新全體數據
+                                </button>
                             </div>
                         )}
 
                         {activeTab === 'sales' && (
                             <div className="space-y-3">
                                 {sales.length === 0 && <div className="text-center py-20 opacity-20 font-bold text-xs">目前尚無銷售紀錄</div>}
-                                {sales.map(s => (
-                                    <div key={s.id} className="bg-white border border-slate-100 p-4 rounded-2xl flex justify-between items-center shadow-sm relative overflow-hidden">
+                                {[...sales].sort((a,b)=>b.timestamp-a.timestamp).map(s => (
+                                    <div key={s.id || s.timestamp} className="bg-white border border-slate-100 p-4 rounded-2xl flex justify-between items-center shadow-sm relative overflow-hidden">
                                         <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${s.style === '藍' ? 'bg-sky-400' : s.style === '粉' ? 'bg-[#e2b4bd]' : 'bg-amber-400'}`}></div>
                                         <div className="flex gap-3 items-center">
                                             <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center text-slate-600 font-bold text-[10px] border uppercase">{s.seller?.[0]}</div>
@@ -234,11 +253,11 @@
                                                     <span>{s.style}束 × {s.qty}</span>
                                                     <span className="text-[8px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-400 font-bold">{s.channel}</span>
                                                 </div>
-                                                <p className="text-[10px] text-slate-400">客: {s.custname || s.custName || '-'} | 電: {s.custphone || s.custPhone || '-'}</p>
+                                                <p className="text-[10px] text-slate-400">客: {s.custName || s.custname || '-'} | 電: {s.custPhone || s.custphone || '-'}</p>
                                             </div>
                                         </div>
                                         <div className="text-right flex items-center gap-3">
-                                            <p className="font-black text-blue-600 text-base">+${(Number(s.gross) - Number(s.fee)).toLocaleString()}</p>
+                                            <p className="font-black text-blue-600 text-base">+${(Number(s.gross || 0) - Number(s.fee || 0)).toLocaleString()}</p>
                                             <button onClick={()=>deleteItem('sales', s.id)} className="text-red-200 hover:text-red-500 transition-colors"><i data-lucide="x-circle" className="w-5 h-5"></i></button>
                                         </div>
                                     </div>
@@ -248,19 +267,41 @@
 
                         {activeTab === 'costs' && (
                             <div className="space-y-4">
-                                <form onSubmit={handleAddCost} className="bg-slate-900 p-5 rounded-2xl flex gap-2 shadow-inner">
-                                    <input type="text" placeholder="項目" className="flex-1 p-3 bg-white/10 text-white rounded-xl outline-none text-sm placeholder:text-white/20" value={costForm.item} onChange={(e)=>setCostForm({...costForm, item: e.target.value})} required />
-                                    <input type="number" inputmode="numeric" placeholder="金額" className="w-20 p-3 bg-white/10 text-white rounded-xl outline-none text-sm font-bold" value={costForm.amount} onChange={(e)=>setCostForm({...costForm, amount: e.target.value})} required />
-                                    <button className="bg-white text-slate-900 px-4 rounded-xl font-black active:scale-90 transition-transform"><i data-lucide="plus" className="w-5 h-5"></i></button>
+                                <form onSubmit={handleAddCost} className="bg-slate-900 p-4 sm:p-5 rounded-2xl flex items-center gap-2 shadow-inner">
+                                    <input 
+                                        type="text" 
+                                        placeholder="項目" 
+                                        className="w-24 sm:w-32 p-3 bg-white/10 text-white rounded-xl outline-none text-sm placeholder:text-white/20" 
+                                        value={costForm.item} 
+                                        onChange={(e)=>setCostForm({...costForm, item: e.target.value})} 
+                                        required 
+                                    />
+                                    <input 
+                                        type="number" 
+                                        inputmode="numeric" 
+                                        placeholder="金額" 
+                                        className="flex-1 min-w-0 p-3 bg-white/10 text-white rounded-xl outline-none text-sm font-bold" 
+                                        value={costForm.amount} 
+                                        onChange={(e)=>setCostForm({...costForm, amount: e.target.value})} 
+                                        required 
+                                    />
+                                    <button className="bg-white text-slate-900 p-3 rounded-xl font-black active:scale-90 transition-transform flex-shrink-0">
+                                        <i data-lucide="plus" className="w-5 h-5"></i>
+                                    </button>
                                 </form>
                                 <div className="divide-y divide-slate-100 bg-white rounded-2xl border shadow-sm px-4">
                                     {costs.length === 0 && <p className="text-center py-10 opacity-20 text-xs font-bold">尚無支出紀錄</p>}
-                                    {costs.map(c => (
-                                        <div key={c.id} className="flex justify-between py-4 items-center">
-                                            <div><span className="font-bold text-slate-600">{c.item}</span><p className="text-[9px] text-slate-300">{new Date(Number(c.timestamp)).toLocaleDateString()}</p></div>
-                                            <div className="flex items-center gap-4">
-                                                <span className="font-black text-red-500">-${Number(c.amount).toLocaleString()}</span>
-                                                <button onClick={()=>deleteItem('costs', c.id)} className="text-slate-200 hover:text-red-400"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+                                    {[...costs].sort((a,b)=>b.timestamp-a.timestamp).map(c => (
+                                        <div key={c.id || c.timestamp} className="flex justify-between py-4 items-center">
+                                            <div className="flex-shrink-0 w-24 sm:w-32 truncate mr-2">
+                                                <span className="font-bold text-slate-600 block text-sm">{c.item}</span>
+                                                <p className="text-[9px] text-slate-300">{new Date(Number(c.timestamp)).toLocaleDateString()}</p>
+                                            </div>
+                                            <div className="flex-1 text-right flex items-center justify-end gap-3 min-w-0">
+                                                <span className="font-black text-red-500 truncate text-sm">-${Number(c.amount || 0).toLocaleString()}</span>
+                                                <button onClick={()=>deleteItem('costs', c.id)} className="text-slate-200 hover:text-red-400 flex-shrink-0">
+                                                    <i data-lucide="trash-2" className="w-4 h-4"></i>
+                                                </button>
                                             </div>
                                         </div>
                                     ))}
@@ -270,7 +311,7 @@
                     </main>
 
                     <footer className="fixed bottom-0 max-w-md w-full bg-white/80 backdrop-blur-md border-t p-3 text-[9px] text-center text-slate-400 font-bold uppercase tracking-widest">
-                        畢業專案流水帳 · 純雲端試算表驅動
+                        全體共享流水帳 · 純試算表驅動同步
                     </footer>
                 </div>
             );
