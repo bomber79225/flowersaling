@@ -93,22 +93,15 @@
             const [sales, setSales] = useState([]);
             const [costs, setCosts] = useState([]);
             
-            // 💡 資源回收桶狀態 (安全 LocalStorage 讀取，防止 Iframe 沙盒報錯)
-            const [trash, setTrash] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('sungli_trash_v2');
-                    return saved ? JSON.parse(saved) : [];
-                } catch (e) {
-                    return [];
-                }
-            });
+            // 💡 垃圾回收桶狀態
+            const [trash, setTrash] = useState([]);
 
             const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('dashboard');
             const [isSyncing, setIsSyncing] = useState(false);
             const [lastSyncTime, setLastSyncTime] = useState('正在同步中...');
 
-            // 💡 智慧 LocalStorage 讀取防護，防止 Iframe 沙盒環境安全報錯導致白畫面
+            // 智慧 LocalStorage 讀取防護，防止 Iframe 沙盒環境安全報錯導致白畫面
             const [sellerName, setSellerName] = useState(() => {
                 try {
                     return localStorage.getItem('seller_name') || '';
@@ -123,16 +116,7 @@
             const [toastMessage, setToastMessage] = useState('');
             const [warningMessage, setWarningMessage] = useState('');
 
-            // 每當回收桶變動，自動存入 LocalStorage 備份
-            useEffect(() => {
-                try {
-                    localStorage.setItem('sungli_trash_v2', JSON.stringify(trash));
-                } catch (e) {
-                    // 靜默忽略沙盒寫入限制
-                }
-            }, [trash]);
-
-            // 從 Google 試算表抓取最新真實資料
+            // 從 Google 試算表抓取最新真實資料 (包含活耀表與回收桶)
             const fetchData = useCallback(async (isSilent = false) => {
                 if (!isSilent) setLoading(true);
                 try {
@@ -144,6 +128,7 @@
                     if (data && !data.error) {
                         setSales(data.sales || []);
                         setCosts(data.costs || []);
+                        setTrash(data.trash || []); // 💡 同步雲端回收桶數據
                         setLastSyncTime(new Date().toLocaleTimeString('zh-TW', { hour12: false }));
                     }
                 } catch (e) { 
@@ -194,14 +179,14 @@
                 }
             };
 
-            // 💡 解決 Number() 轉型 ISO 字串為 NaN 的 Bug：使用原生 Date.getTime 進行智慧毫秒解析
+            // 解決 Number() 轉型 ISO 字串為 NaN 的 Bug：使用原生 Date.getTime 進行智慧毫秒解析
             const parseTime = (val) => {
                 if (!val) return 0;
                 const d = new Date(val);
                 return isNaN(d.getTime()) ? 0 : d.getTime();
             };
 
-            // 💡 排序邏輯優化：新到舊 (最熱騰騰新成交的永遠在最上方)
+            // 💡 排序邏輯：新到舊 (越新越在上方)
             const sortedSales = useMemo(() => {
                 return [...sales].sort((a, b) => parseTime(b.timestamp) - parseTime(a.timestamp));
             }, [sales]);
@@ -290,7 +275,7 @@
                 setCostForm({ item: '', amount: '' });
             };
 
-            // 💡 一鍵刪除（移至垃圾回收桶，不永久刪除）
+            // 💡 一鍵刪除：移至「雲端垃圾回收桶」，不永久刪除
             const deleteItem = (type, item) => {
                 const trashItem = {
                     ...item,
@@ -298,45 +283,37 @@
                     deletedAt: Date.now()
                 };
 
-                // 1. 寫入本地回收桶狀態
+                // 1. 先在本機做狀態更新（秒級反應）
                 setTrash(prev => [trashItem, ...prev]);
-
-                // 2. 自活耀狀態中移除
                 if (type === 'sales') {
                     setSales(prev => prev.filter(s => s.id !== item.id));
                 } else {
                     setCosts(prev => prev.filter(c => c.id !== item.id));
                 }
 
-                // 3. 同步從雲端 Google Sheet 中銷單（保持帳目 100% 精確）
+                // 2. 同步至 GAS：通知雲端將此資料安全移入回收表
                 syncToGAS({ action: "delete", type, id: item.id });
 
-                setToastMessage(`🗑️ 資料已安全移至回收桶！`);
+                setToastMessage(`🗑️ 資料已移至雲端回收桶！`);
                 setTimeout(() => setToastMessage(''), 2000);
             };
 
-            // 💡 一鍵復原還原（從垃圾回收桶恢復，重新寫入 GAS）
+            // 💡 一鍵復原：從雲端垃圾回收桶恢復，重新寫入活耀表
             const restoreItem = (trashItem) => {
                 const { type, deletedAt, ...originalItem } = trashItem;
 
-                // 1. 從回收桶中移除
+                // 1. 本地更新狀態
                 setTrash(prev => prev.filter(t => t.id !== trashItem.id));
-
-                // 2. 放回活耀列表
                 if (type === 'sales') {
                     setSales(prev => [originalItem, ...prev]);
                 } else {
                     setCosts(prev => [originalItem, ...prev]);
                 }
 
-                // 3. 同步將該原始訂單寫回 Google Sheet (維持原始時間戳)
-                const payload = {
-                    action: type === 'sales' ? 'addSale' : 'addCost',
-                    ...originalItem
-                };
-                syncToGAS(payload);
+                // 2. 同步至 GAS：通知雲端將此資料放回並從回收桶刪除
+                syncToGAS({ action: "restore", type, id: originalItem.id });
 
-                setToastMessage(`🔄 已成功將資料還原！`);
+                setToastMessage(`🔄 已成功將資料自雲端還原！`);
                 setTimeout(() => setToastMessage(''), 2000);
             };
 
@@ -521,7 +498,8 @@
                                         </div>
                                         <div className="text-right flex items-center gap-3">
                                             <p className="font-black text-blue-600 text-base">+${(Number(s.gross || 0) - Number(s.fee || 0)).toLocaleString()}</p>
-                                            <button onClick={()=>deleteItem('sales', s)} className="text-slate-300 hover:text-red-600 transition-colors bg-red-50 hover:bg-red-100 p-2 rounded-xl border border-red-100"><Icon name="trash" className="w-4.5 h-4.5" /></button>
+                                            {/* 💡 已將刪除按鈕修復為標準大小 (w-5 h-5) 的高雅紅色線條垃圾桶圖示 */}
+                                            <button onClick={()=>deleteItem('sales', s)} className="text-red-400 hover:text-red-600 transition-colors bg-red-50 hover:bg-red-100 p-2 rounded-xl border border-red-100/50"><Icon name="trash" className="w-5 h-5" /></button>
                                         </div>
                                     </div>
                                 ))}
@@ -545,7 +523,8 @@
                                             </div>
                                             <div className="flex-1 text-right flex items-center justify-end gap-3 min-w-0">
                                                 <span className="font-black text-red-500 truncate text-sm">-${Number(c.amount || 0).toLocaleString()}</span>
-                                                <button onClick={()=>deleteItem('costs', c)} className="text-slate-300 hover:text-red-600 transition-colors bg-red-50 hover:bg-red-100 p-2 rounded-xl border border-red-100"><Icon name="trash" className="w-4.5 h-4.5" /></button>
+                                                {/* 💡 已將刪除按鈕修復為標準大小 (w-5 h-5) 的高雅紅色線條垃圾桶圖示 */}
+                                                <button onClick={()=>deleteItem('costs', c)} className="text-red-400 hover:text-red-600 transition-colors bg-red-50 hover:bg-red-100 p-2 rounded-xl border border-red-100/50"><Icon name="trash" className="w-5 h-5" /></button>
                                             </div>
                                         </div>
                                     ))}
