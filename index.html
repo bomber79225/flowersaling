@@ -71,10 +71,11 @@
                         <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
                     </svg>
                 ),
+                // 💡 圓形逆向迴向旋轉箭頭，超級直觀清晰
                 undo: (
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
-                        <path d="M3 7v6h6"/>
-                        <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                        <path d="M3 3v5h5"/>
                     </svg>
                 ),
                 "refresh-cw": (
@@ -375,7 +376,7 @@
                             <button key={tab} onClick={()=>setActiveTab(tab)} className={`flex-1 py-4 text-xs font-bold transition-all relative ${activeTab===tab?'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30':'text-slate-400'}`}>
                                 {tab==='dashboard'?'控制台':tab==='sales'?'流水帳':tab==='costs'?'支出':'回收桶'}
                                 {tab==='trash' && trash.length > 0 && (
-                                    <span className="absolute top-2 right-2 bg-red-500 text-white font-black text-[9px] w-4.5 h-4.5 rounded-full flex items-center justify-center scale-90">{trash.length}</span>
+                                    <span className="absolute top-2 right-2 bg-red-500 text-white font-black text-[9px] w-5 h-5 rounded-full flex items-center justify-center scale-90">{trash.length}</span>
                                 )}
                             </button>
                         ))}
@@ -556,12 +557,13 @@
                                             <p className="font-bold text-slate-400 text-sm line-through">
                                                 {t.type === 'sales' ? `+$${(Number(t.gross || 0) - Number(t.fee || 0)).toLocaleString()}` : `-$${Number(t.amount || 0).toLocaleString()}`}
                                             </p>
+                                            {/* 💡 已將還原按鈕修復為標準大小 (w-5 h-5) 的高對比亮藍色迴轉箭頭圖示 */}
                                             <button 
                                                 onClick={()=>restoreItem(t)} 
-                                                className="text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 hover:bg-blue-100 p-2 rounded-xl border border-blue-100"
+                                                className="text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 hover:bg-blue-100 p-2 rounded-xl border border-blue-100/50"
                                                 title="還原復原"
                                             >
-                                                <Icon name="undo" className="w-4.5 h-4.5" />
+                                                <Icon name="undo" className="w-5 h-5" />
                                             </button>
                                         </div>
                                     </div>
