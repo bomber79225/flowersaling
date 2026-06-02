@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>一起賺點零用錢 - 擺攤戰鬥正式版</title>
+    <title>一起賺點零用錢 - 擺攤正式戰鬥版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -38,7 +38,7 @@
             "其他": { price: 499, feeRate: 0 }
         };
 
-        // 安全無衝突 SVG 圖標元件 (已新增 refresh-cw，100% 正式修復)
+        // 安全無衝突 原生 SVG 圖標元件 (100% 正式修復)
         const Icon = ({ name, className = "w-5 h-5" }) => {
             const icons = {
                 sparkles: (
@@ -53,13 +53,6 @@
                         <polyline points="12 6 12 12 16 14"/>
                     </svg>
                 ),
-                "x-circle": (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="15" x2="9" y1="9" y2="15"/>
-                        <line x1="9" x2="15" y1="15" y2="9"/>
-                    </svg>
-                ),
                 plus: (
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                         <line x1="12" x2="12" y1="5" y2="19"/>
@@ -71,18 +64,17 @@
                         <polyline points="20 6 9 17 4 12"/>
                     </svg>
                 ),
-                "trash-2": (
+                trash: (
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                         <path d="M3 6h18"/>
                         <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
                         <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
                     </svg>
                 ),
-                info: (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" x2="12" y1="16" y2="12"/>
-                        <line x1="12" x2="12.01" y1="8" y2="8"/>
+                undo: (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                        <path d="M3 7v6h6"/>
+                        <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
                     </svg>
                 ),
                 "refresh-cw": (
@@ -100,6 +92,17 @@
         const App = () => {
             const [sales, setSales] = useState([]);
             const [costs, setCosts] = useState([]);
+            
+            // 💡 資源回收桶狀態 (安全 LocalStorage 讀取，防止 Iframe 沙盒報錯)
+            const [trash, setTrash] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('sungli_trash_v2');
+                    return saved ? JSON.parse(saved) : [];
+                } catch (e) {
+                    return [];
+                }
+            });
+
             const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('dashboard');
             const [isSyncing, setIsSyncing] = useState(false);
@@ -113,13 +116,23 @@
                     return '';
                 }
             });
+
             const [saleForm, setSaleForm] = useState({ channel: '現場擺攤', qty: 1, custName: '', custPhone: '', style: '藍', price: 699 });
             const [costForm, setCostForm] = useState({ item: '', amount: '' });
             const [quickPrice, setQuickPrice] = useState(699);
             const [toastMessage, setToastMessage] = useState('');
             const [warningMessage, setWarningMessage] = useState('');
 
-            // 強制從 Google 試算表抓取最新真實資料
+            // 每當回收桶變動，自動存入 LocalStorage 備份
+            useEffect(() => {
+                try {
+                    localStorage.setItem('sungli_trash_v2', JSON.stringify(trash));
+                } catch (e) {
+                    // 靜默忽略沙盒寫入限制
+                }
+            }, [trash]);
+
+            // 從 Google 試算表抓取最新真實資料
             const fetchData = useCallback(async (isSilent = false) => {
                 if (!isSilent) setLoading(true);
                 try {
@@ -148,8 +161,8 @@
                 const handleFocus = () => fetchData(true);
                 window.addEventListener('focus', handleFocus);
                 
-                // 2. 每 30 秒自動刷新
-                const timer = setInterval(() => fetchData(true), 30000);
+                // 2. 每 45 秒自動刷新
+                const timer = setInterval(() => fetchData(true), 45000);
                 
                 return () => {
                     window.removeEventListener('focus', handleFocus);
@@ -181,6 +194,26 @@
                 }
             };
 
+            // 💡 解決 Number() 轉型 ISO 字串為 NaN 的 Bug：使用原生 Date.getTime 進行智慧毫秒解析
+            const parseTime = (val) => {
+                if (!val) return 0;
+                const d = new Date(val);
+                return isNaN(d.getTime()) ? 0 : d.getTime();
+            };
+
+            // 💡 排序邏輯優化：新到舊 (最熱騰騰新成交的永遠在最上方)
+            const sortedSales = useMemo(() => {
+                return [...sales].sort((a, b) => parseTime(b.timestamp) - parseTime(a.timestamp));
+            }, [sales]);
+
+            const sortedCosts = useMemo(() => {
+                return [...costs].sort((a, b) => parseTime(b.timestamp) - parseTime(a.timestamp));
+            }, [costs]);
+
+            const sortedTrash = useMemo(() => {
+                return [...trash].sort((a, b) => parseTime(b.deletedAt || b.timestamp) - parseTime(a.deletedAt || a.timestamp));
+            }, [trash]);
+
             const stats = useMemo(() => {
                 const totalFixedCost = costs.reduce((sum, c) => sum + Number(c.amount || 0), 0);
                 const totalGrossRevenue = sales.reduce((sum, s) => sum + Number(s.gross || 0), 0);
@@ -190,7 +223,7 @@
                 return { totalFixedCost, totalGrossRevenue, totalFees, profit, totalQty };
             }, [sales, costs]);
 
-            // 擺攤專用快捷收銀函數 (一鍵快速鍵入 ➔ 發送雲端)
+            // 擺攤專用快捷收銀
             const handleQuickSale = (style) => {
                 setWarningMessage('');
                 if (!sellerName) {
@@ -210,11 +243,11 @@
                     fee: 0,
                     seller: sellerName
                 };
-                // 本地先跑，體驗極佳
+                // 本地瞬跑
                 setSales(prev => [newSale, ...prev]);
                 syncToGAS(newSale);
                 
-                // 炫酷飄浮微光提示
+                // 炫酷飄浮提示
                 setToastMessage(`已登記：${style}花束 1 束 ($${quickPrice})`);
                 setTimeout(() => setToastMessage(''), 2000);
             };
@@ -257,14 +290,57 @@
                 setCostForm({ item: '', amount: '' });
             };
 
-            // ⚠️ 優化一鍵刪除：無需確認直接秒刪並同步 GAS 試算表
-            const deleteItem = (type, id) => {
-                if (type === 'sales') setSales(sales.filter(s => s.id != id));
-                else setCosts(costs.filter(c => c.id != id));
-                syncToGAS({ action: "delete", type, id });
+            // 💡 一鍵刪除（移至垃圾回收桶，不永久刪除）
+            const deleteItem = (type, item) => {
+                const trashItem = {
+                    ...item,
+                    type: type, // 'sales' 或 'costs'
+                    deletedAt: Date.now()
+                };
+
+                // 1. 寫入本地回收桶狀態
+                setTrash(prev => [trashItem, ...prev]);
+
+                // 2. 自活耀狀態中移除
+                if (type === 'sales') {
+                    setSales(prev => prev.filter(s => s.id !== item.id));
+                } else {
+                    setCosts(prev => prev.filter(c => c.id !== item.id));
+                }
+
+                // 3. 同步從雲端 Google Sheet 中銷單（保持帳目 100% 精確）
+                syncToGAS({ action: "delete", type, id: item.id });
+
+                setToastMessage(`🗑️ 資料已安全移至回收桶！`);
+                setTimeout(() => setToastMessage(''), 2000);
             };
 
-            // 💡 智慧 LocalStorage 寫入防護，防止 Iframe 沙盒環境安全報錯
+            // 💡 一鍵復原還原（從垃圾回收桶恢復，重新寫入 GAS）
+            const restoreItem = (trashItem) => {
+                const { type, deletedAt, ...originalItem } = trashItem;
+
+                // 1. 從回收桶中移除
+                setTrash(prev => prev.filter(t => t.id !== trashItem.id));
+
+                // 2. 放回活耀列表
+                if (type === 'sales') {
+                    setSales(prev => [originalItem, ...prev]);
+                } else {
+                    setCosts(prev => [originalItem, ...prev]);
+                }
+
+                // 3. 同步將該原始訂單寫回 Google Sheet (維持原始時間戳)
+                const payload = {
+                    action: type === 'sales' ? 'addSale' : 'addCost',
+                    ...originalItem
+                };
+                syncToGAS(payload);
+
+                setToastMessage(`🔄 已成功將資料還原！`);
+                setTimeout(() => setToastMessage(''), 2000);
+            };
+
+            // 智慧 LocalStorage 寫入防護
             const selectSeller = (name) => {
                 setSellerName(name);
                 try {
@@ -318,9 +394,12 @@
                     </header>
 
                     <nav className="flex bg-white border-b sticky top-0 z-10 shadow-sm">
-                        {['dashboard', 'sales', 'costs'].map(tab => (
-                            <button key={tab} onClick={()=>setActiveTab(tab)} className={`flex-1 py-4 text-xs font-bold transition-all ${activeTab===tab?'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30':'text-slate-400'}`}>
-                                {tab==='dashboard'?'控制台':tab==='sales'?'流水帳':'支出'}
+                        {['dashboard', 'sales', 'costs', 'trash'].map(tab => (
+                            <button key={tab} onClick={()=>setActiveTab(tab)} className={`flex-1 py-4 text-xs font-bold transition-all relative ${activeTab===tab?'text-blue-600 border-b-2 border-blue-600 bg-blue-50/30':'text-slate-400'}`}>
+                                {tab==='dashboard'?'控制台':tab==='sales'?'流水帳':tab==='costs'?'支出':'回收桶'}
+                                {tab==='trash' && trash.length > 0 && (
+                                    <span className="absolute top-2 right-2 bg-red-500 text-white font-black text-[9px] w-4.5 h-4.5 rounded-full flex items-center justify-center scale-90">{trash.length}</span>
+                                )}
                             </button>
                         ))}
                     </nav>
@@ -343,7 +422,7 @@
                                     )}
                                 </section>
 
-                                {/* ⚡ 擺攤現場一鍵收銀 (獨立快捷卡片) */}
+                                {/* ⚡ 擺攤現場一鍵收銀 */}
                                 <section className="bg-gradient-to-br from-slate-900 to-zinc-950 text-white rounded-2xl p-5 shadow-xl border border-amber-500/30 relative overflow-hidden">
                                     <div className="absolute top-0 right-0 bg-amber-500 text-slate-950 text-[9px] font-black px-3 py-1 rounded-bl-xl uppercase tracking-widest animate-pulse">
                                         擺攤戰鬥模式
@@ -426,9 +505,9 @@
 
                         {activeTab === 'sales' && (
                             <div className="space-y-3">
-                                {sales.length === 0 && <div className="text-center py-20 opacity-20 font-bold text-xs">目前尚無銷售紀錄</div>}
-                                {[...sales].sort((a,b)=> Number(b.timestamp) - Number(a.timestamp)).map(s => (
-                                    <div key={s.id} className="bg-white border border-slate-100 p-4 rounded-2xl flex justify-between items-center shadow-sm relative overflow-hidden">
+                                {sortedSales.length === 0 && <div className="text-center py-20 opacity-20 font-bold text-xs">目前尚無銷售紀錄</div>}
+                                {sortedSales.map(s => (
+                                    <div key={s.id} className="bg-white border border-slate-100 p-4 rounded-2xl flex justify-between items-center shadow-sm relative overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
                                         <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${s.style === '藍' ? 'bg-sky-400' : s.style === '粉' ? 'bg-[#e2b4bd]' : 'bg-amber-400'}`}></div>
                                         <div className="flex gap-3 items-center">
                                             <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center text-slate-600 font-bold text-[10px] border uppercase">{s.seller?.[0]}</div>
@@ -442,7 +521,7 @@
                                         </div>
                                         <div className="text-right flex items-center gap-3">
                                             <p className="font-black text-blue-600 text-base">+${(Number(s.gross || 0) - Number(s.fee || 0)).toLocaleString()}</p>
-                                            <button onClick={()=>deleteItem('sales', s.id)} className="text-red-200 hover:text-red-500 transition-colors"><Icon name="x-circle" className="w-5 h-5" /></button>
+                                            <button onClick={()=>deleteItem('sales', s)} className="text-slate-300 hover:text-red-600 transition-colors bg-red-50 hover:bg-red-100 p-2 rounded-xl border border-red-100"><Icon name="trash" className="w-4.5 h-4.5" /></button>
                                         </div>
                                     </div>
                                 ))}
@@ -457,20 +536,57 @@
                                     <button className="bg-white text-slate-900 p-3 rounded-xl font-black flex-shrink-0"><Icon name="plus" className="w-5 h-5" /></button>
                                 </form>
                                 <div className="divide-y divide-slate-100 bg-white rounded-2xl border shadow-sm px-4">
-                                    {costs.length === 0 && <p className="text-center py-10 opacity-20 text-xs font-bold">尚無支出紀錄</p>}
-                                    {[...costs].sort((a,b)=>Number(b.timestamp)-Number(a.timestamp)).map(c => (
-                                        <div key={c.id || c.timestamp} className="flex justify-between py-4 items-center">
+                                    {sortedCosts.length === 0 && <p className="text-center py-10 opacity-20 text-xs font-bold">尚無支出紀錄</p>}
+                                    {sortedCosts.map(c => (
+                                        <div key={c.id || c.timestamp} className="flex justify-between py-4 items-center animate-in fade-in duration-300">
                                             <div className="flex-shrink-0 w-24 sm:w-32 truncate mr-2">
                                                 <span className="font-bold text-slate-600 block text-sm">{c.item}</span>
                                                 <p className="text-[9px] text-slate-300">{new Date(Number(c.timestamp)).toLocaleDateString('zh-TW')}</p>
                                             </div>
                                             <div className="flex-1 text-right flex items-center justify-end gap-3 min-w-0">
                                                 <span className="font-black text-red-500 truncate text-sm">-${Number(c.amount || 0).toLocaleString()}</span>
-                                                <button onClick={()=>deleteItem('costs', c.id)} className="text-slate-200 hover:text-red-400 flex-shrink-0"><Icon name="trash-2" className="w-4 h-4" /></button>
+                                                <button onClick={()=>deleteItem('costs', c)} className="text-slate-300 hover:text-red-600 transition-colors bg-red-50 hover:bg-red-100 p-2 rounded-xl border border-red-100"><Icon name="trash" className="w-4.5 h-4.5" /></button>
                                             </div>
                                         </div>
                                     ))}
                                 </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'trash' && (
+                            <div className="space-y-3">
+                                {sortedTrash.length === 0 && (
+                                    <div className="text-center py-20 opacity-20 font-bold text-xs flex flex-col items-center gap-2">
+                                        <Icon name="trash" className="w-8 h-8" />
+                                        <span>資源回收桶空空如也</span>
+                                    </div>
+                                )}
+                                {sortedTrash.map(t => (
+                                    <div key={t.id} className="bg-slate-100/70 border border-slate-200/50 p-4 rounded-2xl flex justify-between items-center shadow-inner relative overflow-hidden animate-in fade-in duration-300">
+                                        <div className="flex gap-3 items-center opacity-60">
+                                            <div className="w-10 h-10 rounded-full bg-slate-200/60 flex items-center justify-center text-slate-500 font-bold text-[10px] border uppercase">{t.seller?.[0] || '無'}</div>
+                                            <div className="flex flex-col">
+                                                <div className="flex items-center gap-2 font-black text-slate-500 text-sm line-through">
+                                                    <span>{(t.style || t.item || '未知')} {t.qty ? `× ${t.qty}` : ''}</span>
+                                                    <span className="text-[8px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-400 font-bold">{t.channel || (t.type === 'costs' ? '支出項目' : '現場客')}</span>
+                                                </div>
+                                                <p className="text-[9px] text-slate-400">刪除時間: {new Date(t.deletedAt).toLocaleTimeString('zh-TW', { hour12: false })}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right flex items-center gap-3">
+                                            <p className="font-bold text-slate-400 text-sm line-through">
+                                                {t.type === 'sales' ? `+$${(Number(t.gross || 0) - Number(t.fee || 0)).toLocaleString()}` : `-$${Number(t.amount || 0).toLocaleString()}`}
+                                            </p>
+                                            <button 
+                                                onClick={()=>restoreItem(t)} 
+                                                className="text-blue-600 hover:text-blue-800 transition-colors bg-blue-50 hover:bg-blue-100 p-2 rounded-xl border border-blue-100"
+                                                title="還原復原"
+                                            >
+                                                <Icon name="undo" className="w-4.5 h-4.5" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         )}
                     </main>
